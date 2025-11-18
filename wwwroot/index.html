@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Busca de Filmes (OMDb via .NET)</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background:#0b1220; color:#e6e9f2; }
+    header { padding: 24px; background: #101a33; box-shadow: 0 2px 12px rgba(0,0,0,.25); position: sticky; top: 0; z-index: 10; }
+    h1 { margin: 0 0 12px; font-size: 20px; }
+    .bar { display: grid; gap: 8px; grid-template-columns: 1fr 110px 120px 110px auto; }
+    .bar input, .bar select, .bar button {
+      padding: 10px 12px; border-radius: 10px; border: 1px solid #2a3960; background:#0f1830; color:#e6e9f2;
+    }
+    .bar button { cursor: pointer; font-weight: 600; border-color:#3853a5; }
+    .wrapper { padding: 20px; max-width: 1200px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+    .card {
+      background:#0f1830; border:1px solid #233357; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column;
+      box-shadow: 0 8px 24px rgba(0,0,0,.2);
+      transition: transform .12s ease;
+    }
+    .card:hover { transform: translateY(-3px); }
+    .poster { aspect-ratio: 2/3; object-fit: cover; width: 100%; background:#0c1429; }
+    .content { padding: 12px; display: grid; gap: 6px; }
+    .title { font-weight: 700; }
+    .muted { color:#9fb0d9; font-size: 13px; }
+    .actions { display: flex; gap: 8px; padding:12px; padding-top: 0; }
+    .btn {
+      border:1px solid #3754a6; background:#16234a; color:#e6e9f2; padding:8px 10px; border-radius: 10px; cursor:pointer;
+      font-weight:600; width:100%; text-align:center;
+    }
+    .empty, .error, .hint { margin-top: 16px; padding: 14px; border-radius: 10px; }
+    .empty { background:#0f1830; border:1px dashed #2a3960; color:#9fb0d9; }
+    .error { background:#2a1420; border:1px solid #803249; color:#ffd7e0; white-space: pre-wrap; }
+    .hint  { background:#0f1830; border:1px solid #233357; color:#cfd7f1; }
+    .loading { opacity:.6; pointer-events:none; }
+    dialog { background:#0f1830; border:1px solid #233357; color:#e6e9f2; border-radius:16px; max-width: 720px; width: 95%; }
+    dialog::backdrop { background: rgba(0,0,0,.6); }
+    .detail { display:grid; grid-template-columns: 260px 1fr; gap:16px; padding:16px; }
+    .detail img { width:100%; border-radius:12px; border:1px solid #233357; background:#0c1429; }
+    .detail h3 { margin:0 0 6px; }
+    .detail p { margin:0 0 8px; color:#cfd7f1; }
+    .close { margin: 0 16px 16px auto; display: block; }
+    @media (max-width: 720px){
+      .bar { grid-template-columns: 1fr 90px 110px 90px auto; }
+      .detail { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎬 ProjetoFilmes — OMDb via .NET</h1>
+    <div class="bar">
+      <input id="q" type="search" placeholder="Pesquise seu filme aqui… (ex: batman, inception, matrix)" />
+      <input id="year" type="number" placeholder="Ano" />
+      <select id="type">
+        <option value="">tipo (todos)</option>
+        <option value="movie">movie</option>
+        <option value="series">series</option>
+        <option value="episode">episode</option>
+        <option value="game">game</option>
+      </select>
+      <input id="page" type="number" value="1" min="1" />
+      <button id="btnSearch">Buscar</button>
+    </div>
+   <!--- <div class="hint">Dica: os dados vêm da sua Minimal API (<code>/movies/search</code>) que chama a OMDb por trás.</div>-->
+  </header>
+
+  <main class="wrapper">
+    <div id="results" class="grid"></div>
+    <div id="status" class="empty" style="display:none;"></div>
+    <div id="error" class="error" style="display:none;"></div>
+  </main>
+
+  <dialog id="dlg">
+    <button class="btn close" onclick="dlg.close()">Fechar</button>
+    <div id="dlgBody"></div>
+  </dialog>
+
+  <script>
+    const resultsEl = document.getElementById('results');
+    const statusEl  = document.getElementById('status');
+    const errorEl   = document.getElementById('error');
+    const dlg       = document.getElementById('dlg');
+    const dlgBody   = document.getElementById('dlgBody');
+
+    function setLoading(on){
+      document.body.classList.toggle('loading', !!on);
+    }
+    function showStatus(msg){
+      if (!msg) { statusEl.style.display='none'; return; }
+      statusEl.textContent = msg; statusEl.style.display = 'block';
+    }
+    function showError(err){
+      if (!err) { errorEl.style.display='none'; return; }
+      errorEl.textContent = err; errorEl.style.display = 'block';
+    }
+
+    async function search(){
+      const q    = document.getElementById('q').value.trim();
+      const page = parseInt(document.getElementById('page').value || '1', 10);
+      const type = document.getElementById('type').value.trim();
+      const year = document.getElementById('year').value.trim();
+
+      showError(null);
+      resultsEl.innerHTML = '';
+      if(!q){ showStatus('Digite algo para buscar.'); return; }
+
+      const params = new URLSearchParams({ q, page: String(Math.max(1, page)) });
+      if (type) params.set('type', type);
+      if (year) params.set('year', year);
+
+      setLoading(true);
+      try{
+        const resp = await fetch(`/movies/search?${params.toString()}`);
+        const data = await resp.json();
+
+        if (!resp.ok){
+          showError((data && (data.error || data.title || JSON.stringify(data))) || `HTTP ${resp.status}`);
+          return;
+        }
+        if (!data || data.response === 'False' || !data.search || !data.search.length){
+          showStatus(data?.error || 'Nada encontrado.');
+          return;
+        }
+
+        showStatus(`Total (página ${page}): ${data.search.length} itens`);
+        renderCards(data.search);
+      }catch(e){
+        showError(String(e));
+      }finally{
+        setLoading(false);
+      }
+    }
+
+    function renderCards(items){
+      resultsEl.innerHTML = items.map(item => {
+        const poster = (item.poster && item.poster !== 'N/A') ? item.poster : '';
+        return `
+          <article class="card">
+            <img class="poster" src="${poster}" alt="Poster" onerror="this.style.display='none'"/>
+            <div class="content">
+              <div class="title">${item.title ?? ''}</div>
+              <div class="muted">${item.year ?? ''} • ${item.type ?? ''} • ${item.imdbID ?? ''}</div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="openDetail('${item.imdbID}')">Detalhes</button>
+              <a class="btn" href="https://www.imdb.com/title/${item.imdbID}/" target="_blank" rel="noopener">IMDB</a>
+            </div>
+          </article>
+        `;
+      }).join('');
+    }
+
+    async function openDetail(imdbId){
+      try{
+        setLoading(true);
+        const resp = await fetch(`/movies/${encodeURIComponent(imdbId)}?fullPlot=true`);
+        const d = await resp.json();
+        if (!resp.ok){
+          showError(d?.error || `HTTP ${resp.status}`);
+          return;
+        }
+        const poster = (d.poster && d.poster !== 'N/A') ? d.poster : '';
+        dlgBody.innerHTML = `
+          <div class="detail">
+            <img src="${poster}" alt="Poster" onerror="this.style.display='none'"/>
+            <div>
+              <h3>${d.title ?? ''} (${d.year ?? ''})</h3>
+              <p><b>Duração:</b> ${d.runtime ?? '-'} • <b>Tipo:</b> ${d.type ?? '-'}</p>
+              <p><b>Gênero:</b> ${d.genre ?? '-'}</p>
+              <p><b>Diretor:</b> ${d.director ?? '-'}</p>
+              <p><b>Atores:</b> ${d.actors ?? '-'}</p>
+              <p><b>IMDB:</b> ${d.imdbRating ?? '-'} (${d.imdbVotes ?? '-'})</p>
+              <p>${d.plot ?? ''}</p>
+            </div>
+          </div>
+        `;
+        dlg.showModal();
+      }catch(e){
+        showError(String(e));
+      }finally{
+        setLoading(false);
+      }
+    }
+
+    // eventos
+    document.getElementById('btnSearch').addEventListener('click', search);
+    document.getElementById('q').addEventListener('keydown', (e) => { if(e.key==='Enter'){ search(); }});
+
+    // busca inicial para demo
+    document.getElementById('q').value = 'batman';
+    search();
+  </script>
+</body>
+</html>
